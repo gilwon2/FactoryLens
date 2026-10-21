@@ -4,6 +4,7 @@ Streamlit은 버튼·위젯을 조작할 때마다 이 파일 전체를 위에�
 그래서 다시 실행되어도 유지해야 하는 값(DB 연결, 검증 결과)은 st.session_state에 저장한다.
 """
 import sqlite3
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -11,6 +12,7 @@ import streamlit as st
 
 from factorylens import metrics
 from factorylens.db import create_db, load_data
+from factorylens.export import to_csv_bytes
 from factorylens.validation import DEFECT_COLUMNS, PRODUCTION_COLUMNS, validate_upload
 
 SAMPLE_DIR = Path(__file__).resolve().parent / "data" / "sample"
@@ -60,6 +62,19 @@ def issues_table(issues: list[dict]) -> pd.DataFrame:
     return table.rename(columns={"level": "구분", "file": "파일", "row": "줄 번호", "column": "컬럼", "reason": "사유"})
 
 
+def download_button(df: pd.DataFrame, name: str, filters: dict) -> None:
+    """화면의 표와 같은 내용을 CSV로 내려받는다. 숫자는 서식 없이 원래 값으로 저장한다."""
+    period = f"{filters['start_date']}_{filters['end_date']}".replace("-", "")
+    st.download_button(
+        "CSV 다운로드",
+        to_csv_bytes(df.rename(columns=COLUMN_LABELS)),
+        file_name=f"factorylens_{name}_{period}.csv",
+        mime="text/csv",
+        on_click="ignore",  # 다운로드 때문에 화면이 다시 실행되지 않게 한다
+        key=f"download_{name}",
+    )
+
+
 # ---------------------------------------------------------------------------
 # 업로드 -> 검증 -> 적재
 # ---------------------------------------------------------------------------
@@ -83,9 +98,11 @@ def load(production_data: bytes, defects_data: bytes | None, source: str) -> Non
     st.session_state["result"] = result
     st.session_state["conn"] = conn
     st.session_state["source"] = source
+    # 불러올 때마다 번호를 올려 필터 위젯을 새로 만든다 (이전 데이터의 선택값이 남지 않도록)
+    st.session_state["load_id"] = st.session_state.get("load_id", 0) + 1
 
 
-def sidebar() -> None:
+def sidebar_upload() -> None:
     with st.sidebar:
         st.header("데이터 불러오기")
         production_file = st.file_uploader("생산 데이터 (production.csv) · 필수", type=["csv"])
@@ -97,7 +114,6 @@ def sidebar() -> None:
                      defects_file.getvalue() if defects_file is not None else None,
                      source=production_file.name)
 
-        st.divider()
         st.caption("파일이 없다면 가상 샘플 데이터로 체험해 보세요.")
         if st.button("샘플 데이터로 체험", width="stretch"):
             load((SAMPLE_DIR / "production_sample.csv").read_bytes(),
@@ -108,6 +124,32 @@ def sidebar() -> None:
                              file_name="production_sample.csv", mime="text/csv", on_click="ignore")
         col2.download_button("샘플 불량 CSV", (SAMPLE_DIR / "defects_sample.csv").read_bytes(),
                              file_name="defects_sample.csv", mime="text/csv", on_click="ignore")
+
+
+def sidebar_filters(conn) -> dict:
+    """필터 위젯을 그리고 metrics 함수에 넘길 필터 dict를 반환한다."""
+    load_id = st.session_state.get("load_id", 0)
+    first, last = (date.fromisoformat(d) for d in metrics.date_range(conn))
+    processes = metrics.distinct_values(conn, "process")
+    products = metrics.distinct_values(conn, "product")
+
+    with st.sidebar:
+        st.divider()
+        st.header("분석 필터")
+        picked = st.date_input("생산일 범위", value=(first, last), min_value=first, max_value=last,
+                               key=f"dates_{load_id}")
+        selected_processes = st.multiselect("공정", processes, default=processes, key=f"process_{load_id}")
+        selected_products = st.multiselect("제품", products, default=products, key=f"product_{load_id}")
+
+    # 달력에서 시작일만 고른 상태라면 값이 1개다 -> 그날 하루로 본다
+    start = picked[0] if len(picked) > 0 else first
+    end = picked[1] if len(picked) > 1 else start
+    return {
+        "start_date": start.isoformat(),
+        "end_date": end.isoformat(),
+        "processes": selected_processes,
+        "products": selected_products,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -156,8 +198,7 @@ def show_load_report(result) -> None:
             st.dataframe(issues_table(result.issues), hide_index=True)
 
 
-def show_kpi(conn) -> None:
-    kpi = metrics.summary_kpi(conn)
+def show_kpi(kpi: dict) -> None:
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("생산량", f"{kpi['produced_qty']:,}", help="SUM(produced_qty)")
     col2.metric("불량 수량", f"{kpi['defect_qty']:,}", help="SUM(defect_qty). LOT 수가 아니라 불량품 개수입니다.")
@@ -166,12 +207,31 @@ def show_kpi(conn) -> None:
     col4.metric("LOT 수", f"{kpi['lot_count']:,}")
 
 
-def show_group(conn, group_column: str) -> None:
-    df = metrics.by_group(conn, group_column)
-    label = COLUMN_LABELS[group_column]
-    st.bar_chart(df, x=group_column, y="defect_rate_pct", x_label=label, y_label="불량률(%)",
-                 sort=False)  # SQL에서 정렬한 순서(불량률 높은 순)를 유지
+def show_group(conn, group_column: str, filters: dict) -> None:
+    df = metrics.by_group(conn, group_column, **filters)
+    st.bar_chart(df, x=group_column, y="defect_rate_pct", x_label=COLUMN_LABELS[group_column],
+                 y_label="불량률(%)", sort=False)  # SQL에서 정렬한 순서(불량률 높은 순)를 유지
     st.dataframe(to_display(df), hide_index=True)
+    download_button(df, group_column, filters)
+
+
+def show_defect_types(conn, filters: dict) -> None:
+    df = metrics.by_defect_type(conn, **filters)
+    if df.empty:
+        st.info("선택한 조건에서 발생한 불량이 없습니다.")
+        return
+    st.bar_chart(df, x="defect_type", y="defect_qty", x_label="불량 유형", y_label="불량 수량",
+                 horizontal=True, sort=False)
+    st.dataframe(to_display(df), hide_index=True)
+    download_button(df, "defect_type", filters)
+
+
+def show_trend(conn, filters: dict) -> None:
+    df = metrics.by_group(conn, "work_date", **filters)
+    st.line_chart(df, x="work_date", y="defect_rate_pct", x_label="생산일", y_label="불량률(%)")
+    st.caption("생산량이 0인 날은 불량률을 계산할 수 없어 선이 끊겨 보일 수 있습니다.")
+    st.dataframe(to_display(df), hide_index=True)
+    download_button(df, "daily", filters)
 
 
 # ---------------------------------------------------------------------------
@@ -182,7 +242,7 @@ st.set_page_config(page_title="FactoryLens", page_icon="🏭", layout="wide")
 st.title("FactoryLens")
 st.caption("공정별 생산량·불량률 분석 · ⚠️ 이 앱의 샘플 데이터는 포트폴리오용으로 생성한 **가상 데이터**이며 실제 공장 데이터가 아닙니다.")
 
-sidebar()
+sidebar_upload()
 
 if "result" not in st.session_state:
     show_guide()
@@ -195,9 +255,24 @@ conn = st.session_state["conn"]
 if conn is None:
     st.stop()
 
+filters = sidebar_filters(conn)
+
 st.divider()
 st.subheader("핵심 지표")
-show_kpi(conn)
+st.caption(f"기간 {filters['start_date']} ~ {filters['end_date']} · "
+           f"공정 {len(filters['processes'])}개 · 제품 {len(filters['products'])}개 선택")
+kpi = metrics.summary_kpi(conn, **filters)
+if kpi["lot_count"] == 0:
+    st.info("선택한 조건에 해당하는 데이터가 없습니다. 왼쪽 필터에서 기간·공정·제품을 다시 선택해 주세요.")
+    st.stop()
+show_kpi(kpi)
 
-st.subheader("공정별 불량률")
-show_group(conn, "process")
+tab_process, tab_product, tab_type, tab_trend = st.tabs(["공정별", "제품별", "불량 유형별", "일자별 추이"])
+with tab_process:
+    show_group(conn, "process", filters)
+with tab_product:
+    show_group(conn, "product", filters)
+with tab_type:
+    show_defect_types(conn, filters)
+with tab_trend:
+    show_trend(conn, filters)

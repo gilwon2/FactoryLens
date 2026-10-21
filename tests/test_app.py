@@ -2,6 +2,7 @@
 
 화면 배치까지 검사하지는 않고, 주요 흐름이 예외 없이 끝나고 핵심 값이 보이는지만 확인한다.
 """
+from datetime import date
 from pathlib import Path
 
 from streamlit.testing.v1 import AppTest
@@ -61,3 +62,51 @@ def test_fatal_result_shows_error_and_no_kpi():
     assert not at.exception
     assert "빈 파일" in at.error[0].value
     assert "생산량" not in metric_values(at)
+
+
+# ---------- S8: 필터와 탭 ----------
+
+def load_sample():
+    at = AppTest.from_file(APP).run()
+    [sample_button] = [b for b in at.button if b.label == "샘플 데이터로 체험"]
+    sample_button.click().run()
+    return at
+
+
+def test_tabs_and_downloads_render():
+    at = load_sample()
+    assert not at.exception
+    assert [t.label for t in at.tabs] == ["공정별", "제품별", "불량 유형별", "일자별 추이"]
+    assert len(at.dataframe) >= 4  # 탭마다 표 1개 (+ 접힌 상세 표가 있을 수 있음)
+
+
+def test_process_filter_changes_kpi():
+    at = load_sample()
+    at.multiselect(key="process_1").set_value(["PAINT"]).run()
+    assert not at.exception
+    assert metric_values(at)["불량률"] == "3.68%"   # S6에서 확인한 PAINT 불량률과 같아야 한다
+
+
+def test_empty_selection_shows_message_instead_of_error():
+    at = load_sample()
+    at.multiselect(key="process_1").set_value([]).run()
+    assert not at.exception
+    assert "해당하는 데이터가 없습니다" in at.info[0].value
+    assert "생산량" not in metric_values(at)
+
+
+def test_single_day_date_filter():
+    at = load_sample()
+    at.date_input(key="dates_1").set_value((date(2026, 9, 1), date(2026, 9, 1))).run()
+    assert not at.exception
+    assert metric_values(at)["LOT 수"] == "18"  # 샘플에서 2026-09-01 LOT는 18개
+
+
+def test_reload_resets_filters():
+    at = load_sample()
+    at.multiselect(key="process_1").set_value(["PAINT"]).run()
+    [sample_button] = [b for b in at.button if b.label == "샘플 데이터로 체험"]
+    sample_button.click().run()
+    # 다시 불러오면 새 위젯(process_2)이 만들어지고 전체 선택으로 돌아간다
+    assert len(at.multiselect(key="process_2").value) == 4
+    assert metric_values(at)["불량률"] == "2.23%"
