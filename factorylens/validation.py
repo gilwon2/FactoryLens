@@ -4,7 +4,10 @@
   F1~F4: 파일 단위 검증. F1~F3에 걸리면 FileError를 발생시켜 파일 전체를 거부한다.
   D1·D2: 중복 검증. 완전중복은 1행만 남기고(경고), 키 충돌은 그 키의 행을 모두 제외한다.
   R1·R2: 행 단위 검증. 결측·타입·범위 오류가 있는 행은 제외한다.
-  (X1·X2·Z1은 다음 단계에서 추가)
+  X1·X2: 두 파일 간 교차 검증. 고아 불량 행과, 불량이 생산량보다 많은 LOT를 제외한다.
+  Z1   : 검증 후 유효한 생산 데이터가 0건이면 적재하지 않는다.
+
+앱에서는 validate_upload() 하나만 호출하면 위 단계가 모두 실행된다.
 
 이슈(오류·경고·안내)는 아래 형태의 dict 목록으로 모은다.
   {"file": 파일 구분, "row": CSV 줄 번호 또는 None, "column": 컬럼명 또는 None,
@@ -12,6 +15,7 @@
 """
 import io
 import re
+from dataclasses import dataclass, field
 from datetime import datetime
 
 import pandas as pd
@@ -52,12 +56,15 @@ def _explain_parser_error(error: Exception) -> str:
     return str(error)
 
 
-def read_csv(data: bytes, required_columns: list[str], file_label: str) -> tuple[pd.DataFrame, list[dict]]:
+def read_csv(data: bytes, required_columns: list[str], file_label: str,
+             allow_empty: bool = False) -> tuple[pd.DataFrame, list[dict]]:
     """CSV 바이트를 읽어 (필수 컬럼만 담은 DataFrame, 이슈 목록)을 반환한다.
 
     - 모든 값은 문자열로 읽고 앞뒤 공백을 제거한다. 결측은 빈 문자열 ""로 통일한다.
     - 반환 DataFrame의 index는 원본 CSV의 줄 번호다(헤더가 1번 줄).
     - F1~F3에 해당하면 FileError를 발생시킨다.
+    - allow_empty=True이면 헤더만 있는 파일(F3)을 거부하지 않고 빈 DataFrame을 반환한다.
+      불량이 한 건도 없는 기간의 defects 파일은 헤더만 있는 것이 정상이기 때문이다.
     """
     # F1: 빈 파일 / 인코딩 / CSV 구조
     if not data or not data.strip():
@@ -105,7 +112,7 @@ def read_csv(data: bytes, required_columns: list[str], file_label: str) -> tuple
     df = df[~(df == "").all(axis=1)]
 
     # F3: 데이터 행 0개
-    if df.empty:
+    if df.empty and not allow_empty:
         raise FileError("헤더만 있고 데이터 행이 없습니다.")
 
     return df, issues
@@ -224,3 +231,108 @@ def validate_production(df: pd.DataFrame, file_label: str = "production") -> tup
 def validate_defects(df: pd.DataFrame, file_label: str = "defects") -> tuple[pd.DataFrame, list[dict]]:
     return validate_rows(df, file_label, key_columns=["lot_id", "defect_type"],
                          quantity_columns=["defect_qty"], date_columns=[])
+
+
+# ---------------------------------------------------------------------------
+# X1·X2: 두 파일 간 교차 검증
+# ---------------------------------------------------------------------------
+
+def cross_validate(production: pd.DataFrame, defects: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, list[dict]]:
+    """검증을 통과한 production·defects를 서로 맞춰 본다."""
+    issues = []
+
+    # X1: production에 없는 LOT의 불량 행 (production 파일에 없거나, 오류로 제외된 LOT)
+    orphan = ~defects["lot_id"].isin(set(production["lot_id"]))
+    for line in defects.index[orphan]:
+        issues.append(make_issue("defects", line, "lot_id", "error",
+                                 f"LOT '{defects.at[line, 'lot_id']}'가 유효한 생산 데이터에 없습니다 "
+                                 "(production 파일에 없거나 오류로 제외됨)"))
+    defects = defects[~orphan]
+
+    # X2: LOT별 불량 수량 합계가 생산량보다 많으면 데이터가 모순이므로 그 LOT를 통째로 제외
+    defect_sum = defects.groupby("lot_id")["defect_qty"].sum()                       # LOT -> 불량 합계
+    defect_total = production["lot_id"].map(defect_sum).fillna(0).astype(int)        # 불량 행 없는 LOT는 0
+    over = defect_total > production["produced_qty"]
+    for line in production.index[over]:
+        issues.append(make_issue("production", line, "produced_qty", "error",
+                                 f"LOT '{production.at[line, 'lot_id']}'의 불량 수량 합계({defect_total[line]:,})가 "
+                                 f"생산량({production.at[line, 'produced_qty']:,})보다 많아 이 LOT의 생산·불량 데이터를 모두 제외했습니다"))
+
+    over_lots = set(production.loc[over, "lot_id"])
+    defect_over = defects["lot_id"].isin(over_lots)
+    for line in defects.index[defect_over]:
+        issues.append(make_issue("defects", line, "defect_qty", "error",
+                                 f"LOT '{defects.at[line, 'lot_id']}'의 불량 수량 합계가 생산량보다 많아 제외했습니다"))
+
+    return production[~over], defects[~defect_over], issues
+
+
+# ---------------------------------------------------------------------------
+# 진입 함수: 앱은 이 함수만 호출한다
+# ---------------------------------------------------------------------------
+
+@dataclass
+class UploadResult:
+    production: pd.DataFrame | None = None   # 적재할 생산 데이터 (fatal이면 None)
+    defects: pd.DataFrame | None = None      # 적재할 불량 데이터 (fatal이면 None)
+    issues: list = field(default_factory=list)
+    fatal: str | None = None                 # 적재할 수 없는 사유. None이면 적재 가능
+    production_rows_read: int = 0            # 빈 줄을 뺀 원본 데이터 행 수 (적재율 표시용)
+    defects_rows_read: int = 0
+
+    @property
+    def ok(self) -> bool:
+        return self.fatal is None
+
+
+def validate_upload(production_data: bytes, defects_data: bytes | None) -> UploadResult:
+    """두 CSV를 읽고 F -> D -> R -> X -> Z 순서로 검증한다.
+
+    defects_data가 None이면(불량 파일을 올리지 않음) 모든 LOT의 불량을 0으로 보고 경고를 남긴다.
+    """
+    result = UploadResult()
+    file_errors = []
+
+    # F1~F4: 두 파일을 모두 읽어 본 뒤, 파일 단위 오류를 한꺼번에 알려 준다
+    try:
+        production, issues = read_csv(production_data, PRODUCTION_COLUMNS, "production")
+        result.issues += issues
+    except FileError as e:
+        file_errors.append(f"[production] {e}")
+
+    if defects_data is None:
+        defects = pd.DataFrame(columns=DEFECT_COLUMNS)
+        result.issues.append(make_issue("defects", None, None, "warning",
+                                        "불량 파일이 없어 모든 LOT의 불량 수량을 0으로 계산합니다"))
+    else:
+        try:
+            defects, issues = read_csv(defects_data, DEFECT_COLUMNS, "defects", allow_empty=True)
+            result.issues += issues
+        except FileError as e:
+            file_errors.append(f"[defects] {e}")
+
+    if file_errors:
+        result.fatal = "\n".join(file_errors)
+        return result
+
+    result.production_rows_read = len(production)
+    result.defects_rows_read = len(defects)
+
+    # D1·D2, R1·R2: 파일별 검증
+    production, issues = validate_production(production)
+    result.issues += issues
+    defects, issues = validate_defects(defects)
+    result.issues += issues
+
+    # X1·X2: 교차 검증
+    production, defects, issues = cross_validate(production, defects)
+    result.issues += issues
+
+    # Z1: 남은 생산 데이터가 없으면 적재하지 않는다
+    if production.empty:
+        result.fatal = "검증을 통과한 생산 데이터가 없어 적재하지 않았습니다. 오류 목록을 확인하세요."
+        return result
+
+    result.production = production
+    result.defects = defects
+    return result

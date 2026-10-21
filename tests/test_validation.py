@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from factorylens.validation import (
@@ -6,9 +8,11 @@ from factorylens.validation import (
     FileError,
     check_date,
     check_quantity,
+    cross_validate,
     read_csv,
     validate_defects,
     validate_production,
+    validate_upload,
 )
 
 HEADER = "lot_id,work_date,process,product,produced_qty\n"
@@ -277,3 +281,122 @@ def test_defects_key_conflict_on_lot_and_type():
     assert clean[["defect_type", "defect_qty"]].values.tolist() == [["DENT", 2]]
     assert all(i["column"] == "lot_id+defect_type" for i in issues)
     assert "L1/SCRATCH" in issues[0]["reason"]
+
+
+# =====================================================================
+# S4: 교차 검증(X1·X2)과 전체 흐름(validate_upload, Z1)
+# =====================================================================
+DEFECT_HEADER = "lot_id,defect_type,defect_qty\n"
+SAMPLE_DIR = Path(__file__).resolve().parent.parent / "data" / "sample"
+
+
+def upload(production_rows: str, defect_rows: str | None):
+    defects_data = None if defect_rows is None else (DEFECT_HEADER + defect_rows).encode()
+    return validate_upload((HEADER + production_rows).encode(), defects_data)
+
+
+# ---------- X1: 고아 불량 행 ----------
+
+def test_orphan_defect_rows_excluded():
+    result = upload(ROW, "L1,SCRATCH,3\nL9,DENT,2\n")
+    assert result.ok
+    assert result.defects["lot_id"].tolist() == ["L1"]
+    [issue] = result.issues
+    assert (issue["file"], issue["row"], issue["column"]) == ("defects", 3, "lot_id")
+    assert "L9" in issue["reason"]
+
+
+def test_defects_of_excluded_production_lot_become_orphans():
+    # L2는 생산량 오류로 제외되었으므로 L2의 불량 행도 함께 빠져야 한다
+    result = upload(ROW + "L2,2026-09-01,PRESS,P-A100,abc\n", "L1,SCRATCH,3\nL2,DENT,2\n")
+    assert result.production["lot_id"].tolist() == ["L1"]
+    assert result.defects["lot_id"].tolist() == ["L1"]
+    assert [(i["file"], i["row"]) for i in result.issues] == [("production", 3), ("defects", 3)]
+
+
+# ---------- X2: 불량 수량 > 생산량 ----------
+
+def test_lot_with_more_defects_than_produced_is_fully_excluded():
+    result = upload(
+        "L1,2026-09-01,PRESS,P-A100,5\nL2,2026-09-01,PRESS,P-A100,100\n",
+        "L1,SCRATCH,3\nL1,DENT,3\nL2,DENT,1\n",
+    )
+    assert result.production["lot_id"].tolist() == ["L2"]
+    assert result.defects["lot_id"].tolist() == ["L2"]
+    errors = [(i["file"], i["row"]) for i in result.issues]
+    assert errors == [("production", 2), ("defects", 2), ("defects", 3)]
+    assert "합계(6)" in result.issues[0]["reason"] and "생산량(5)" in result.issues[0]["reason"]
+
+
+def test_defects_equal_to_produced_is_allowed():
+    result = upload("L1,2026-09-01,PRESS,P-A100,5\n", "L1,SCRATCH,3\nL1,DENT,2\n")
+    assert len(result.production) == 1 and len(result.defects) == 2
+    assert result.issues == []
+
+
+def test_zero_production_lot():
+    # 생산 0 + 불량 없음은 정상 (설비 정지), 생산 0 + 불량 1은 모순
+    result = upload("L1,2026-09-01,PRESS,P-A100,0\nL2,2026-09-01,PRESS,P-A100,0\n", "L2,DENT,1\n")
+    assert result.production["lot_id"].tolist() == ["L1"]
+    assert result.defects.empty
+
+
+def test_cross_validate_with_no_defects():
+    production, _ = validate_production(read_production(HEADER + ROW)[0])
+    empty_defects, _ = validate_defects(read_csv(DEFECT_HEADER.encode(), DEFECT_COLUMNS, "defects", allow_empty=True)[0])
+    p, d, issues = cross_validate(production, empty_defects)
+    assert len(p) == 1 and d.empty and issues == []
+
+
+# ---------- 전체 흐름 ----------
+
+def test_defects_header_only_means_no_defects():
+    result = upload(ROW, "")
+    assert result.ok
+    assert result.defects.empty
+    assert result.issues == []
+
+
+def test_missing_defects_file_gives_warning():
+    result = upload(ROW, None)
+    assert result.ok
+    assert result.defects.empty
+    assert [i["level"] for i in result.issues] == ["warning"]
+
+
+def test_production_header_only_is_still_rejected():
+    result = upload("", "L1,SCRATCH,3\n")
+    assert not result.ok
+    assert result.fatal.startswith("[production]")
+
+
+def test_both_file_errors_reported_together():
+    result = validate_upload(b"", b"lot_id,defect_qty\nL1,3\n")
+    assert not result.ok
+    assert "[production] 빈 파일" in result.fatal
+    assert "[defects] 필수 컬럼이 없습니다: defect_type" in result.fatal
+    assert result.production is None and result.defects is None
+
+
+def test_all_production_rows_invalid_is_fatal_but_keeps_issues():
+    result = upload("L1,2026-09-01,PRESS,P-A100,-1\nL2,bad-date,PRESS,P-A100,5\n", "L1,SCRATCH,1\n")
+    assert not result.ok
+    assert "검증을 통과한 생산 데이터가 없어" in result.fatal
+    assert len(result.issues) == 3        # 생산 오류 2건 + 고아 불량 1건 -> 사용자가 원인을 볼 수 있어야 한다
+    assert result.production is None
+
+
+def test_rows_read_counts_exclude_blank_lines():
+    result = upload(ROW + "\n" + "L2,2026-09-01,PRESS,P-A100,abc\n", "L1,SCRATCH,1\n\n")
+    assert result.production_rows_read == 2
+    assert result.defects_rows_read == 1
+    assert len(result.production) == 1
+
+
+def test_sample_data_passes_cleanly():
+    result = validate_upload((SAMPLE_DIR / "production_sample.csv").read_bytes(),
+                             (SAMPLE_DIR / "defects_sample.csv").read_bytes())
+    assert result.ok
+    assert result.issues == []
+    assert len(result.production) == result.production_rows_read
+    assert len(result.defects) == result.defects_rows_read
