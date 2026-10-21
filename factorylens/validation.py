@@ -2,7 +2,9 @@
 
 검증 단계(docs 및 계획서의 규칙 번호와 동일):
   F1~F4: 파일 단위 검증. F1~F3에 걸리면 FileError를 발생시켜 파일 전체를 거부한다.
-  (R1·R2, D1·D2, X1·X2·Z1은 다음 단계에서 추가)
+  D1·D2: 중복 검증. 완전중복은 1행만 남기고(경고), 키 충돌은 그 키의 행을 모두 제외한다.
+  R1·R2: 행 단위 검증. 결측·타입·범위 오류가 있는 행은 제외한다.
+  (X1·X2·Z1은 다음 단계에서 추가)
 
 이슈(오류·경고·안내)는 아래 형태의 dict 목록으로 모은다.
   {"file": 파일 구분, "row": CSV 줄 번호 또는 None, "column": 컬럼명 또는 None,
@@ -10,11 +12,15 @@
 """
 import io
 import re
+from datetime import datetime
 
 import pandas as pd
 
 PRODUCTION_COLUMNS = ["lot_id", "work_date", "process", "product", "produced_qty"]
 DEFECT_COLUMNS = ["lot_id", "defect_type", "defect_qty"]
+
+# 수량 상한. 오타(0을 여러 개 더 입력)를 잡고, SQLite 정수 범위를 넘는 값을 막는다.
+MAX_QTY = 1_000_000_000
 
 # 앞에서부터 순서대로 시도한다. utf-8-sig는 엑셀이 붙이는 BOM도 처리한다.
 ENCODINGS = ["utf-8-sig", "cp949"]
@@ -103,3 +109,118 @@ def read_csv(data: bytes, required_columns: list[str], file_label: str) -> tuple
         raise FileError("헤더만 있고 데이터 행이 없습니다.")
 
     return df, issues
+
+
+# ---------------------------------------------------------------------------
+# R2: 값 하나를 검사해 문제가 있으면 사유 문자열, 없으면 None을 반환한다.
+#     빈 값은 R1(결측)에서 따로 처리하므로 여기서는 들어오지 않는다.
+# ---------------------------------------------------------------------------
+
+def check_quantity(value: str):
+    if re.fullmatch(r"[0-9]+", value):
+        if int(value) > MAX_QTY:
+            return f"값이 너무 큽니다 (최대 {MAX_QTY:,})"
+        return None
+    if re.fullmatch(r"-[0-9]+(\.[0-9]+)?", value):
+        return "음수는 허용되지 않습니다"
+    if re.fullmatch(r"[0-9]*\.[0-9]+", value):
+        return "정수가 아닙니다 (소수점 불가)"
+    return "0 이상의 정수가 아닙니다"
+
+
+def check_date(value: str):
+    # strptime은 "2026-9-1"도 받아들이므로 자릿수를 정규식으로 먼저 고정한다
+    if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value):
+        return "날짜 형식이 아닙니다 (YYYY-MM-DD)"
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        return "존재하지 않는 날짜입니다"
+    return None
+
+
+# ---------------------------------------------------------------------------
+# D1·D2: 중복 처리
+# ---------------------------------------------------------------------------
+
+def remove_duplicates(df: pd.DataFrame, key_columns: list[str], file_label: str) -> tuple[pd.DataFrame, list[dict]]:
+    """D1 완전중복은 첫 행만 남기고, D2 키 충돌은 그 키의 행을 모두 제외한다.
+
+    키가 비어 있는 행은 중복 판단에서 빼고 그대로 둔다(뒤의 R1에서 결측으로 제외된다).
+    """
+    issues = []
+    key_text = "+".join(key_columns)
+    has_key = (df[key_columns] != "").all(axis=1)
+
+    # D1: 모든 값이 같은 행은 같은 데이터가 두 번 들어온 것으로 보고 1행만 남긴다
+    keyed = df[has_key]
+    is_duplicate = keyed.duplicated(keep="first")  # 두 번째로 나온 행부터 True
+    # 같은 값끼리 묶어서 각 묶음의 첫 줄 번호를 구한다 (경고 메시지에 "몇 번 줄과 같은지" 표시용)
+    line_numbers = pd.Series(keyed.index, index=keyed.index)
+    first_line = line_numbers.groupby([keyed[c] for c in keyed.columns]).transform("first")
+    for line in keyed.index[is_duplicate]:
+        issues.append(make_issue(file_label, line, None, "warning",
+                                 f"{first_line[line]}번 줄과 완전히 같은 중복 행이라 1행만 반영했습니다"))
+    df = df.drop(index=keyed.index[is_duplicate])
+
+    # D2: 키는 같은데 값이 다른 행 -> 어느 값이 맞는지 알 수 없으므로 모두 제외
+    keyed = df[(df[key_columns] != "").all(axis=1)]
+    conflict = keyed.duplicated(subset=key_columns, keep=False)
+    for _, group in keyed[conflict].groupby(key_columns):
+        lines = list(group.index)
+        key_value = "/".join(group.iloc[0][key_columns])
+        line_text = ", ".join(str(n) for n in lines)
+        for line in lines:
+            issues.append(make_issue(file_label, line, key_text, "error",
+                                     f"키 '{key_value}'가 여러 줄({line_text})에 서로 다른 값으로 있어 모두 제외했습니다"))
+    df = df.drop(index=keyed.index[conflict])
+
+    return df, issues
+
+
+# ---------------------------------------------------------------------------
+# 파일별 검증 (D1·D2 -> R1·R2 순서)
+# ---------------------------------------------------------------------------
+
+def validate_rows(df: pd.DataFrame, file_label: str, key_columns: list[str],
+                  quantity_columns: list[str], date_columns: list[str]) -> tuple[pd.DataFrame, list[dict]]:
+    # 중복을 타입 검사보다 먼저 본다. 같은 키의 한 줄이 타입 오류로 먼저 빠지면
+    # 남은 줄이 충돌 없이 통과해 버리기 때문이다.
+    df, issues = remove_duplicates(df, key_columns, file_label)
+
+    bad_lines = set()
+    for column in df.columns:
+        if column in quantity_columns:
+            checker = check_quantity
+        elif column in date_columns:
+            checker = check_date
+        else:
+            checker = None
+
+        def find_problem(value, checker=checker):
+            if value == "":
+                return "값이 비어 있습니다"  # R1
+            if checker is not None:
+                return checker(value)         # R2
+            return None
+
+        reasons = df[column].map(find_problem)  # 값마다 사유 또는 None
+        for line in reasons.index[reasons.notna()]:
+            value, reason = df.at[line, column], reasons[line]
+            bad_lines.add(line)
+            issues.append(make_issue(file_label, line, column, "error", f"{reason} (입력값: '{value}')" if value else reason))
+
+    clean = df.drop(index=sorted(bad_lines)).copy()
+    for column in quantity_columns:
+        clean[column] = clean[column].astype(int)
+    return clean, issues
+
+
+def validate_production(df: pd.DataFrame, file_label: str = "production") -> tuple[pd.DataFrame, list[dict]]:
+    return validate_rows(df, file_label, key_columns=["lot_id"],
+                         quantity_columns=["produced_qty"], date_columns=["work_date"])
+
+
+def validate_defects(df: pd.DataFrame, file_label: str = "defects") -> tuple[pd.DataFrame, list[dict]]:
+    return validate_rows(df, file_label, key_columns=["lot_id", "defect_type"],
+                         quantity_columns=["defect_qty"], date_columns=[])
