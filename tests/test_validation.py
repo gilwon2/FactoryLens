@@ -35,6 +35,17 @@ def test_whitespace_only_file_rejected():
         read_production("\n  \n\n")
 
 
+def test_bom_only_file_rejected():
+    # 엑셀에서 빈 시트를 "CSV UTF-8"로 저장하면 BOM 3바이트만 남는다 (0바이트가 아님)
+    with pytest.raises(FileError, match="빈 파일"):
+        read_csv(b"\xef\xbb\xbf", PRODUCTION_COLUMNS, "production")
+
+
+def test_unclosed_quote_rejected():
+    with pytest.raises(FileError, match="CSV 형식"):
+        read_production(HEADER + 'L1,2026-09-01,"PRESS,P-A100,500\n')
+
+
 def test_undecodable_bytes_rejected():
     # 0x80 단독 바이트는 UTF-8과 CP949 모두에서 잘못된 문자다
     with pytest.raises(FileError, match="인코딩"):

@@ -3,6 +3,8 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+.coverage
+htmlcov/
 
 # 데이터베이스 파일 (앱은 인메모리 DB를 사용하지만 실수로 생긴 파일 차단)
 *.db

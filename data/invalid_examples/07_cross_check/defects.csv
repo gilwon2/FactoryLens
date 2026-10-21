@@ -1,0 +1,7 @@
+lot_id,defect_type,defect_qty
+L1,SCRATCH,5
+L2,CRACK,4
+L3,BUBBLE,9
+L9,DENT,1
+L4,LOOSE_BOLT,2
+L4,MISSING_PART,2

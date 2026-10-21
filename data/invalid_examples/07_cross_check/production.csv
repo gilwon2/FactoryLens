@@ -1,0 +1,5 @@
+lot_id,work_date,process,product,produced_qty
+L1,2026-09-01,PRESS,P-A100,500
+L2,2026-09-01,WELD,P-A100,400
+L3,2026-09-02,PAINT,P-B200,300
+L4,2026-09-02,ASSY,P-C300,3
