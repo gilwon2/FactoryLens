@@ -1,3 +1,8 @@
 [server]
 # 업로드 파일 최대 크기(MB)
 maxUploadSize = 10
+
+[client]
+# 처리되지 않은 예외의 상세 정보(예외 종류, 메시지, 트레이스)를 브라우저에 보여 주지 않는다.
+# 상세 내용은 서버 콘솔에만 남는다. 로컬 디버깅 방법은 README 참고.
+showErrorDetails = "none"

@@ -39,6 +39,13 @@ pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
+처리되지 않은 예외의 상세 정보(예외 종류, 메시지, 트레이스)는 브라우저에 표시하지 않고 터미널에만 남깁니다(`.streamlit/config.toml`의 `client.showErrorDetails = "none"`). 로컬에서 디버깅할 때만 아래처럼 다시 켭니다. 설정 파일은 실행 위치 기준으로 읽으므로 **프로젝트 루트에서 실행**해야 합니다.
+
+```bash
+streamlit run app.py --client.showErrorDetails=full     # 이번 실행에만 적용
+# 또는 PowerShell: $env:STREAMLIT_CLIENT_SHOW_ERROR_DETAILS="full" (끝나면 Remove-Item Env:STREAMLIT_CLIENT_SHOW_ERROR_DETAILS)
+```
+
 샘플 데이터와 오류 예시를 다시 만드는 방법입니다. 시드가 고정되어 있어 항상 같은 결과가 나옵니다.
 
 ```bash
@@ -116,7 +123,7 @@ FactoryLens/
 ├─ scripts/                     # 샘플 데이터·오류 예시 생성
 ├─ data/sample/                 # 가상 샘플 데이터
 ├─ data/invalid_examples/       # 오류 처리 시연용 CSV
-├─ tests/                       # pytest (126개)
+├─ tests/                       # pytest (128개)
 └─ docs/                        # ERD, 지표 정의, 테스트 결과
 ```
 
@@ -124,7 +131,7 @@ FactoryLens/
 
 ## 테스트
 
-- 126개 테스트 통과, 커버리지 98% (로직 모듈 100%)
+- 128개 테스트 통과, 커버리지 98% (로직 모듈 100%)
 - 화면 흐름은 Streamlit `AppTest`로 브라우저 없이 테스트합니다.
 - 상세 내용: [docs/test_report.md](docs/test_report.md)
 

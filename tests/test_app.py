@@ -5,6 +5,8 @@
 from datetime import date
 from pathlib import Path
 
+import pytest
+from streamlit import config
 from streamlit.testing.v1 import AppTest
 
 from factorylens.db import create_db, load_data
@@ -110,3 +112,27 @@ def test_reload_resets_filters():
     # 다시 불러오면 새 위젯(process_2)이 만들어지고 전체 선택으로 돌아간다
     assert len(at.multiselect(key="process_2").value) == 4
     assert metric_values(at)["불량률"] == "2.23%"
+
+
+# ---------- 배포 설정: 오류 상세 노출 제한 ----------
+# 아래 테스트는 설정값과 Streamlit 서버가 만드는 예외 메시지만 확인한다.
+# 실제 브라우저 표시와 배포 플랫폼의 설정 덮어쓰기는 수동 점검(docs/test_report.md)으로 확인한다.
+
+@pytest.fixture
+def project_config(monkeypatch):
+    """Streamlit은 실행 위치(cwd)의 .streamlit/config.toml을 읽으므로, 프로젝트 루트에서 설정을 다시 읽는다."""
+    monkeypatch.chdir(Path(APP).parent)
+    config.get_config_options(force_reparse=True)
+
+
+def test_config_hides_error_details_and_keeps_upload_limit(project_config):
+    assert config.get_option("client.showErrorDetails") == "none"
+    assert config.get_option("server.maxUploadSize") == 10
+
+
+def test_uncaught_exception_details_are_redacted(project_config):
+    at = AppTest.from_string("raise ValueError('C:/secret/path')").run()
+    [error] = at.exception
+    assert "C:/secret/path" not in error.message   # 원래 메시지 대신 일반 문구
+    assert error.stack_trace == []                  # 트레이스 없음
+    assert error.proto.type == ""                   # 예외 종류(ValueError)도 숨김
