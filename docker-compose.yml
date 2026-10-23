@@ -1,0 +1,41 @@
+# 누적 모드 실행: PostgreSQL + FactoryLens
+#   docker compose up --build          -> http://localhost:8501
+#   docker compose down                -> 중지 (데이터는 볼륨 pgdata에 남는다)
+#   docker compose down -v             -> 중지 + 데이터 삭제
+#
+# 명령줄 적재 (inbox 폴더의 CSV를 누적 DB에 넣기):
+#   docker compose run --rm app python -m factorylens.ingest inbox/production.csv inbox/defects.csv
+#
+# 비밀번호는 로컬 개발용 기본값이다. 바꾸려면 .env 파일에 POSTGRES_PASSWORD를 지정한다 (.env.example 참고).
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: factorylens
+      POSTGRES_USER: factorylens
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-factorylens}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U factorylens -d factorylens"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    # 외부에서 DB에 직접 붙어 보고 싶을 때만 아래 두 줄의 주석을 푼다 (예: DBeaver, psql)
+    # ports:
+    #   - "5432:5432"
+
+  app:
+    build: .
+    environment:
+      FACTORYLENS_DATABASE_URL: postgresql://factorylens:${POSTGRES_PASSWORD:-factorylens}@db:5432/factorylens
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./inbox:/app/inbox:ro
+    depends_on:
+      db:
+        condition: service_healthy   # DB가 접속을 받을 수 있게 된 뒤에 앱을 시작한다
+
+volumes:
+  pgdata:

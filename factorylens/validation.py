@@ -26,6 +26,9 @@ DEFECT_COLUMNS = ["lot_id", "defect_type", "defect_qty"]
 # 수량 상한. 오타(0을 여러 개 더 입력)를 잡고, SQLite 정수 범위를 넘는 값을 막는다.
 MAX_QTY = 1_000_000_000
 
+# FactoryLens가 내려 주는 분석 결과 CSV의 한글 헤더. 이 파일을 원본 대신 올렸을 때 알아보기 위해 쓴다.
+RESULT_FILE_HEADERS = {"공정", "제품", "생산일", "불량 유형", "LOT 수", "생산량", "불량 수량", "불량률(%)"}
+
 # 앞에서부터 순서대로 시도한다. utf-8-sig는 엑셀이 붙이는 BOM도 처리한다.
 ENCODINGS = ["utf-8-sig", "cp949"]
 
@@ -95,7 +98,10 @@ def read_csv(data: bytes, required_columns: list[str], file_label: str,
     # F2: 필수 컬럼 누락
     missing = [c for c in required_columns if c not in df.columns]
     if missing:
-        raise FileError(f"필수 컬럼이 없습니다: {', '.join(missing)} (필수 컬럼: {', '.join(required_columns)})")
+        message = f"필수 컬럼이 없습니다: {', '.join(missing)} (필수 컬럼: {', '.join(required_columns)})"
+        if RESULT_FILE_HEADERS & set(df.columns):
+            message += " FactoryLens에서 내려받은 분석 결과 파일을 올린 것 같습니다. 원본 데이터 파일을 올려 주세요."
+        raise FileError(message)
 
     issues = []
 

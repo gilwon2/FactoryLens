@@ -81,6 +81,15 @@ def test_missing_required_column_rejected():
         read_production("lot_id,work_date,process,product\nL1,2026-09-01,PRESS,P-A100\n")
 
 
+def test_result_csv_uploaded_as_input_gets_hint():
+    # 공정별 탭에서 내려받은 결과 CSV를 생산 데이터로 잘못 올린 경우
+    with pytest.raises(FileError, match="분석 결과 파일을 올린 것 같습니다"):
+        read_production("공정,LOT 수,생산량,불량 수량,불량률(%)\nPAINT,132,72390,2661,3.68\n")
+    with pytest.raises(FileError) as error:      # 결과 파일이 아니면 안내를 붙이지 않는다
+        read_production("lot_id,work_date,process,product\nL1,2026-09-01,PRESS,P-A100\n")
+    assert "분석 결과" not in str(error.value)
+
+
 def test_column_names_are_normalized():
     df, _ = read_production(" LOT_ID ,Work_Date,PROCESS,product,Produced_Qty\n" + ROW)
     assert list(df.columns) == PRODUCTION_COLUMNS

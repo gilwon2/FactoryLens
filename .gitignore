@@ -15,8 +15,13 @@ htmlcov/
 .env
 .streamlit/secrets.toml
 
-# 에디터 / OS
+# 에디터 / OS / 개인 도구 설정
+.claude/
+Claude outputs/
 .vscode/
 .idea/
 Thumbs.db
 desktop.ini
+
+# 명령줄 적재용 입력 파일
+inbox/*.csv

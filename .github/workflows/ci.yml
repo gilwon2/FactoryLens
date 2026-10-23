@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: 테스트 (Python ${{ matrix.python-version }}, SQLite + PostgreSQL)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+
+    # 집계·적재 테스트를 PostgreSQL에서도 실행하기 위한 테스트 전용 DB
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: factorylens_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      FACTORYLENS_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/factorylens_test
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      - name: pytest (PostgreSQL 테스트가 하나라도 건너뛰어지면 실패)
+        shell: bash   # pipefail 포함: pytest가 실패하면 tee가 있어도 단계가 실패한다
+        run: |
+          python -m pytest -q -rs --cov=factorylens --cov=app --cov-report=term-missing | tee pytest.log
+          ! grep -q "SKIPPED" pytest.log
+
+  docker:
+    name: Docker 이미지 빌드·실행 확인
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker compose로 PostgreSQL + 앱 실행
+        run: docker compose up --build -d --wait
+      - name: 명령줄 적재 (샘플 데이터 2회 -> 두 번째는 전부 건너뜀)
+        run: |
+          docker compose run --rm app python -m factorylens.ingest data/sample/production_sample.csv data/sample/defects_sample.csv --source ci
+          docker compose run --rm app python -m factorylens.ingest data/sample/production_sample.csv data/sample/defects_sample.csv --source ci | tee second.log
+          grep -q "건너뜀 534" second.log
+      - name: 앱 상태 확인
+        run: curl --fail --retry 5 --retry-delay 3 --retry-all-errors http://localhost:8501/_stcore/health
+      - name: 로그 (실패 시)
+        if: failure()
+        run: docker compose logs
+      - run: docker compose down -v
+        if: always()

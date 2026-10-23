@@ -6,38 +6,54 @@
 pip install -r requirements-dev.txt
 python -m pytest -q                                   # 전체 테스트
 python -m pytest -q --cov=factorylens --cov=app       # 커버리지 포함
+
+# PostgreSQL에서도 실행 (테스트 전용 DB. 테스트마다 테이블을 지운다)
+FACTORYLENS_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/factorylens_test python -m pytest -q
 ```
 
-## 결과 요약 (2026-10-22 실행)
+## 결과 요약 (2026-10-23 실행)
 
-- 환경: Windows 10, Python 3.10.11, pandas 2.3.3, streamlit 1.65.0, pytest 9.1.1, pytest-cov 7.1.0
-- 결과: **128개 통과, 0개 실패** (배포 설정 테스트 2개 추가 후. 변경 전후 결과는 아래 "배포 설정 변경" 참고)
+- 환경: Linux, Python 3.13.17, PostgreSQL 16.15, pandas 2.3.3, streamlit 1.65.0, psycopg 3.3.6, pytest 9.1.1, pytest-cov 7.1.0
+- 결과: **208개 통과, 0개 실패** (테스트 168개 + 집계·적재 테스트 40개를 PostgreSQL에서 한 번 더 실행)
+- PostgreSQL 없이 실행하면 `168 passed, 40 skipped`입니다. CI는 PostgreSQL 서비스를 띄우고, 하나라도 건너뛰면 실패로 처리합니다.
+- 이전 결과(2026-10-22, Windows 10, Python 3.10.11): 128개 통과, 커버리지 98%
 
-| 파일 | 개수 | 대상 |
-|---|---|---|
-| `tests/test_validation.py` | 63 | CSV 읽기, 행·중복·교차 검증 |
-| `tests/test_metrics.py` | 26 | 집계 SQL, 불량률, 필터 |
-| `tests/test_export.py` | 10 | 다운로드 CSV (BOM, 수식 주입 방지) |
-| `tests/test_invalid_examples.py` | 10 | `data/invalid_examples/` 시나리오별 기대 결과 |
-| `tests/test_app.py` | 11 | Streamlit 화면 흐름 (AppTest, 브라우저 없이 실행), 오류 상세 노출 제한 설정 |
-| `tests/test_db.py` | 7 | 스키마, 적재, DB 제약 |
-| `tests/test_smoke.py` | 1 | 패키지 import |
+| 파일 | SQLite | PostgreSQL | 대상 |
+|---|---|---|---|
+| `tests/test_validation.py` | 64 | - | CSV 읽기, 행·중복·교차 검증, 분석 결과 파일 오업로드 안내 |
+| `tests/test_metrics.py` | 33 | 26 | 집계 SQL, 불량률, 필터, **파레토 누적 비중, p 관리도** |
+| `tests/test_ingest.py` | 17 | 14 | **적재·배치 기록, 재업로드 멱등성(K1), 기존 LOT 충돌(K2), 롤백, 명령줄 적재** |
+| `tests/test_db.py` | 17 | - | 스키마, 적재, DB 제약, **DB 주소·저장 모드, 중첩 트랜잭션, PostgreSQL 결과 타입 변환** |
+| `tests/test_app.py` | 16 | - | Streamlit 화면 흐름 (AppTest), **누적 모드 화면, 관리 한계 이탈 표시, DB 연결 실패 문구** |
+| `tests/test_export.py` | 10 | - | 다운로드 CSV (BOM, 수식 주입 방지) |
+| `tests/test_invalid_examples.py` | 10 | - | `data/invalid_examples/` 시나리오별 기대 결과 |
+| `tests/test_smoke.py` | 1 | - | 패키지 import |
 
-### 커버리지
+### 커버리지 (PostgreSQL 포함 실행)
 
 | 모듈 | 구문 수 | 커버리지 |
 |---|---|---|
-| `factorylens/validation.py` | 181 | 100% |
-| `factorylens/metrics.py` | 54 | 100% |
-| `factorylens/db.py` | 16 | 100% |
+| `factorylens/validation.py` | 185 | 100% |
+| `factorylens/metrics.py` | 87 | 100% |
+| `factorylens/db.py` | 106 | 100% |
 | `factorylens/export.py` | 12 | 100% |
-| `app.py` | 160 | 96% |
-| **합계** | 423 | **98%** |
+| `factorylens/ingest.py` | 117 | 97% |
+| `app.py` | 276 | 95% |
+| **합계** | 783 | **98%** |
 
-`app.py`에서 실행되지 않은 7줄은 아래 세 가지이며, 수동 점검으로 확인합니다.
-- 파일 업로드 버튼 처리: AppTest가 파일 업로드를 흉내 낼 수 없음
-- DB 적재 예외 처리: 검증을 통과한 데이터에서는 발생하지 않는 2차 방어선
-- 필터 결과에 불량이 0건일 때의 안내 문구
+실행되지 않은 줄은 아래와 같으며, 수동 점검과 다른 테스트로 확인합니다.
+- `app.py`: 파일 업로드 버튼 처리(AppTest가 파일 업로드를 흉내 낼 수 없음), DB 적재 예외 처리(2차 방어선, 같은 경로는 `test_db_error_rolls_back_whole_batch`가 확인), 누적 모드의 거부 배치 안내 문구
+- `ingest.py`: 명령줄 적재 중 DB 오류 출력(같은 예외 처리는 `ingest()` 테스트가 확인)
+
+### 실행 환경별 확인
+
+| 확인 | 결과 |
+|---|---|
+| 데모 모드 브라우저 실행 (Playwright 스크린샷, `docs/images/`) | ☑ 샘플: 생산 288,347, 불량률 2.23%, 탭 5개, 파레토 상위 7개 80.2%, PAINT 관리도 중심선 3.68%·이탈 0일 |
+| 누적 모드 브라우저 실행 (PostgreSQL 16) | ☑ 샘플 적재 → 같은 파일 재적재(534 LOT 건너뜀) → 오류 예시 05(5행 제외) → 빈 파일(거부) 순서로 배치 4건 기록, 적재 이력·배치 상세 표시 |
+| 깨끗한 가상환경에 `requirements.txt`만 설치 + Dockerfile이 복사하는 파일만으로 실행 | ☑ 명령줄 적재와 앱 상태 확인(`/_stcore/health`) 정상 |
+| `docker compose config` 문법 검사 | ☑ |
+| Docker 이미지 빌드 | ☐ 작업 환경에서 Docker Hub 접근이 막혀 미실행. GitHub Actions의 `docker` 작업이 빌드·실행·적재를 확인 |
 
 ## 핵심 예외 상황과 검증 테스트
 
@@ -65,6 +81,18 @@ python -m pytest -q --cov=factorylens --cov=app       # 커버리지 포함
 | 보안 | `=`로 시작하는 텍스트를 CSV로 내보냄 | `'` 접두어 | `test_sanitize_cell` |
 | 보안 | 처리되지 않은 예외 발생 | 예외 종류·메시지·트레이스를 숨기고 일반 문구만 표시 | `test_uncaught_exception_details_are_redacted` |
 | 성능 | 20만 행(7MB) 검증 | 약 2초 (개선 전 8.4초) | 수동 측정 |
+| 적재 | 같은 파일 재업로드 | 모든 LOT 건너뜀, 합계 그대로 (멱등성) | `test_reupload_same_file_is_idempotent`, `test_persistent_mode_reupload_is_idempotent` |
+| 적재 | 기존 LOT와 생산량·날짜·불량 수량·불량 유형 구성이 다름 | 새 LOT 행 제외, 기존 값 유지, 배치 번호와 함께 사유 기록 | `test_conflicting_lot_excluded_and_existing_kept` (5가지 경우) |
+| 적재 | 일부는 기존, 일부는 신규 LOT | 신규만 적재 | `test_overlapping_upload_inserts_only_new_lots` |
+| 적재 | 파일 거부된 업로드 | 데이터 없이 'rejected' 배치와 사유 기록 | `test_rejected_upload_recorded_without_data` |
+| 적재 | 적재 도중 DB 제약 위반 | 배치 기록까지 전부 롤백, 화면에는 일반 문구 | `test_db_error_rolls_back_whole_batch` |
+| 적재 | 기존 LOT 조회가 500개 단위를 넘음 | 나눠 조회해도 정확히 분류 | `test_large_upload_spans_query_chunks` |
+| 파레토 | 반올림한 비중의 합이 100이 아님 (33.33×3) | 누적 비중은 수량 누적합으로 계산해 마지막 값 100.0 | `test_cumulative_share_uses_quantities_not_rounded_shares` |
+| 관리도 | 하루만 불량이 급증 | 그날만 이탈 표시 (손계산 UCL 3.722%) | `test_p_chart_limits_and_out_of_control`, `test_p_chart_out_of_control_day_is_reported` |
+| 관리도 | p̄ − 3σ < 0 | 하한 0 | `test_p_chart_lower_limit_not_negative` |
+| 관리도 | 사이드바에서 여러 공정 선택 | 지정한 공정 하나로만 계산 | `test_p_chart_ignores_process_filter_from_sidebar` |
+| 보안 | 누적 DB 접속 실패 | 접속 주소·비밀번호 없이 일반 문구만 표시 | `test_persistent_mode_db_unreachable_shows_message` |
+| 화면 | 생산량이 모두 0 / 불량이 모두 0 | 축이 깨진 차트 대신 안내 문구 | `test_rate_charts_replaced_by_message` |
 
 ## 테스트가 잡아낸 문제
 
@@ -77,6 +105,18 @@ python -m pytest -q --cov=factorylens --cov=app       # 커버리지 포함
 3. **SQL NULL과 pandas NaN**
    - 집계 결과의 NULL은 pandas에서 NaN으로 읽힙니다.
    - 화면에서는 `-`, CSV에서는 빈 칸으로 표시되도록 처리했습니다.
+4. **PostgreSQL에서 정렬 SQL 오류** (2026-10-23, PostgreSQL 지원 추가 중)
+   - `ORDER BY defect_rate_pct IS NULL, ...`은 SQLite에서는 되지만, PostgreSQL은 출력 별칭을 식 안에서 쓸 수 없습니다.
+   - 두 DB가 모두 지원하는 `DESC NULLS LAST`로 바꿨습니다. 같은 집계 테스트를 두 DB에서 돌려 확인합니다.
+5. **PostgreSQL 합계가 실수로 나옴**
+   - `SUM(bigint)`의 결과 타입이 `numeric`이라 불량 수량 18이 `Decimal('18')` → 18.0으로 보였습니다.
+   - 소수 자릿수가 없는 `numeric`은 정수로, 있는 값은 실수로 바꾸도록 했습니다(`test_postgres_values_normalized`).
+6. **SQLite 중첩 트랜잭션이 중간에 커밋됨**
+   - 적재(`ingest`)가 트랜잭션 안에서 `load_data`를 부르는데, `load_data`도 `with conn:`을 써서 안쪽 블록이 끝날 때 COMMIT됐습니다. 이후 단계가 실패해도 데이터가 남을 수 있었습니다.
+   - 이미 트랜잭션 안이면 새로 열지 않고 합류하도록 바꿨습니다(`test_nested_transaction_rolls_back_as_one`, `test_db_error_rolls_back_whole_batch`).
+7. **굵은 글씨 뒤 한글 조사**
+   - 화면 문구 `**80.2%**를`이 굵게 표시되지 않고 별표가 그대로 보였습니다. 마크다운은 닫는 `**` 바로 뒤에 글자가 오면 굵게로 인식하지 않습니다.
+   - 문구를 바꿔 `**80.2%**` 뒤에 공백이 오게 했습니다(브라우저 스크린샷으로 발견).
 
 ## 수동 점검 (브라우저)
 
@@ -129,17 +169,15 @@ raise ValueError("C:/secret/path leaked")
 | M3 | `streamlit run boom.py --client.showErrorDetails=full` | 화면에 `full`, `ValueError`·메시지·트레이스 표시 | ☑ `full`/`10`, `ValueError: C:/secret/path leaked`와 Traceback 표시 |
 | M4 | `$env:STREAMLIT_CLIENT_SHOW_ERROR_DETAILS="full"` 설정 후 실행 | M3와 같음 | ☑ `full`/`10`, M3와 같은 상세 표시 |
 | M4-b | 환경변수 삭제 후 다시 실행 | M2와 같음 | ☑ `none`/`10`, 일반 문구만 표시 |
-| M5 | 배포 환경 (배포 후, 별도 승인) | 플랫폼이 설정을 덮어쓰지 않음: 일반 문구만 표시, 11MB 업로드 거부 | ☐ 미실행 |
+| M5 | 배포 환경 (배포 후, 별도 승인) | 플랫폼이 설정을 덮어쓰지 않음: 일반 문구만 표시, 11MB 업로드 거부 | ☐ 미실행 (방법: `docs/deploy.md`) |
 
 ## 공개 배포 전 필수 후속 작업
 
-1. **`app.py:92` SQLite 예외 원문 노출:** DB 적재 실패 시 `st.error()`에 `sqlite3.Error` 원문(`{e}`)이 그대로 표시됩니다. `showErrorDetails`는 처리되지 않은 예외에만 적용되므로 이 메시지는 가려지지 않으며, 테이블·컬럼 이름이 노출될 수 있습니다. 화면에는 일반 문구만 보여 주고 원문은 서버 로그로 남기도록 바꿔야 합니다.
-2. **배포 환경 확인(M5):** 배포 플랫폼이 실행 옵션 등으로 `showErrorDetails`를 덮어쓰지 않는지, 프로젝트 설정 파일이 읽히는지 확인합니다.
+1. ~~**`app.py:92` SQLite 예외 원문 노출**~~ → **해결 (2026-10-23).** DB 오류는 `IngestError`로 바꾸고, 화면에는 일반 문구("DB 적재 중 오류가 발생해 이번 업로드 전체를 취소했습니다…")만, 원문은 서버 로그(`logger.error`)와 명령줄 출력에만 남깁니다. `test_db_error_rolls_back_whole_batch`가 화면용 문구에 컬럼 이름이 없는지 확인합니다. 누적 DB 접속 실패 문구에도 접속 정보를 넣지 않습니다.
+2. **배포 환경 확인(M5):** 배포 후 `docs/deploy.md`의 확인 표대로 점검합니다. ☐ 미실행
 
-## 화면 개선 후보 (기능 오류 아님, 포트폴리오 정리 전 처리 예정)
+## 화면 개선 후보 → 모두 반영 (2026-10-23)
 
-수동 점검 중 발견했습니다. 계산 결과는 정상이고 표시 방식만 개선 대상입니다.
-
-1. **오류·경고 상세 표의 `None`:** 줄 번호·컬럼이 없는 이슈(파일 단위 경고, 완전중복 경고)에서 빈칸 대신 `None`이 표시됩니다 (`app.py`의 `issues_table`).
-2. **불량률을 계산할 수 없거나 0일 때의 차트:** 생산량이 모두 0이면(`09_zero_production`) 공정별 차트 세로축에 `null`이 표시되고, 불량이 0건이면 세로축에 `0.000000`만 보입니다. 표는 `-`와 0.00으로 정상 표시됩니다 (`app.py`의 `show_group`).
-3. **분석 결과 CSV를 입력으로 올린 경우:** 탭에서 받은 결과 CSV(한글 헤더)를 생산 데이터로 올리면 "필수 컬럼이 없습니다: lot_id, …"로 거부됩니다. 동작은 맞지만, 결과 파일을 올린 것 같다는 안내가 있으면 더 이해하기 쉽습니다.
+1. ~~오류·경고 상세 표의 `None`~~ → 줄 번호·컬럼이 없으면 빈칸으로 표시 (`test_issue_table_shows_blank_instead_of_none`)
+2. ~~불량률을 계산할 수 없거나 0일 때의 차트~~ → 공정별·제품별·일자별 탭에서 차트 대신 안내 문구 (`test_rate_charts_replaced_by_message`)
+3. ~~분석 결과 CSV를 입력으로 올린 경우~~ → "FactoryLens에서 내려받은 분석 결과 파일을 올린 것 같습니다" 안내 추가 (`test_result_csv_uploaded_as_input_gets_hint`)
