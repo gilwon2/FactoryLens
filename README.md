@@ -7,7 +7,7 @@
 
 > ⚠️ 이 저장소의 모든 데이터는 `scripts/generate_sample_data.py`로 생성한 **가상 데이터**이며 실제 공장 데이터가 아닙니다.
 
-- **데모:** _(배포 후 추가)_ · "샘플 데이터로 체험" 버튼으로 바로 써 볼 수 있습니다
+- **데모:** https://factorylens-1.streamlit.app · "샘플 데이터로 체험" 버튼으로 바로 써 볼 수 있습니다 (공개 데모는 업로드한 데이터를 저장하지 않습니다)
 - **문서:** [ERD](docs/ERD.md) · [지표 정의](docs/metrics.md) · [테스트 결과](docs/test_report.md) · [배포 방법](docs/deploy.md) · [오류 예시 CSV](data/invalid_examples/README.md)
 
 ![FactoryLens 화면](docs/images/overview.png)
