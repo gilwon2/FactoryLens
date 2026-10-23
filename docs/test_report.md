@@ -169,12 +169,12 @@ raise ValueError("C:/secret/path leaked")
 | M3 | `streamlit run boom.py --client.showErrorDetails=full` | 화면에 `full`, `ValueError`·메시지·트레이스 표시 | ☑ `full`/`10`, `ValueError: C:/secret/path leaked`와 Traceback 표시 |
 | M4 | `$env:STREAMLIT_CLIENT_SHOW_ERROR_DETAILS="full"` 설정 후 실행 | M3와 같음 | ☑ `full`/`10`, M3와 같은 상세 표시 |
 | M4-b | 환경변수 삭제 후 다시 실행 | M2와 같음 | ☑ `none`/`10`, 일반 문구만 표시 |
-| M5 | 배포 환경 (Streamlit Community Cloud, https://factorylens-1.streamlit.app) | 플랫폼이 설정을 덮어쓰지 않음: 일반 문구만 표시, 11MB 업로드 거부 | ◐ 2026-10-23 부분 확인: 업로더에 "10MB per file" 표시(플랫폼 기본값 200MB가 아니라 프로젝트 `config.toml`이 적용됨). 샘플 체험 결과 로컬과 동일(534/534, 1,353/1,353, 제외 0, 불량 6,441, 불량률 2.23%, 탭 5개, 파레토 상위 7개 80.2%, ASSY 관리도 중심선 1.05%·이탈 0일). 11MB 파일 업로드 거부 문구는 미확인 |
+| M5 | 배포 환경 (Streamlit Community Cloud, https://factorylens-1.streamlit.app) | 플랫폼이 설정을 덮어쓰지 않음: 일반 문구만 표시, 11MB 업로드 거부 | ☑ 2026-10-23: 업로더에 "10MB per file" 표시(플랫폼 기본값 200MB가 아니라 프로젝트 `config.toml`이 적용됨). 샘플 체험 결과 로컬과 동일(534/534, 1,353/1,353, 제외 0, 불량 6,441, 불량률 2.23%, 탭 5개, 파레토 상위 7개 80.2%, ASSY 관리도 중심선 1.05%·이탈 0일). 11.0MB 파일(`production_11mb.csv`) 업로드 시 오류 아이콘과 "File must be 10.0MB or smaller." 표시, "검증 후 불러오기" 버튼 비활성화 (사용자 확인, 스크린샷 있음) |
 
 ## 공개 배포 전 필수 후속 작업
 
 1. ~~**`app.py:92` SQLite 예외 원문 노출**~~ → **해결 (2026-10-23).** DB 오류는 `IngestError`로 바꾸고, 화면에는 일반 문구("DB 적재 중 오류가 발생해 이번 업로드 전체를 취소했습니다…")만, 원문은 서버 로그(`logger.error`)와 명령줄 출력에만 남깁니다. `test_db_error_rolls_back_whole_batch`가 화면용 문구에 컬럼 이름이 없는지 확인합니다. 누적 DB 접속 실패 문구에도 접속 정보를 넣지 않습니다.
-2. **배포 환경 확인(M5):** 2026-10-23 배포 완료, 설정 파일 적용과 샘플 결과 확인(위 M5 행). 11MB 파일 업로드 거부 문구만 남음.
+2. ~~**배포 환경 확인(M5)**~~ → **완료 (2026-10-23).** 설정 파일 적용, 샘플 결과, 11MB 업로드 거부를 모두 확인했습니다(위 M5 행). 공개 배포 전 필수 후속 작업이 모두 끝났습니다.
 
 ## 화면 개선 후보 → 모두 반영 (2026-10-23)
 
