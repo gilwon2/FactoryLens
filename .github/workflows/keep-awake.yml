@@ -1,0 +1,20 @@
+name: Keep demo awake
+
+# Streamlit Community Cloud는 방문이 없으면 앱을 재운다. 처음 방문한 사람이 잠든 화면을 보지 않도록
+# 주기적으로 데모를 열고, 잠들어 있으면 깨운다.
+on:
+  schedule:
+    - cron: "17 */6 * * *"   # 6시간마다
+  workflow_dispatch:
+
+jobs:
+  wake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Open demo and wake if sleeping
+        run: |
+          pip install --quiet playwright==1.47.0
+          python -m playwright install --with-deps chromium > /dev/null
+          python tools/keep_awake.py https://factorylens-1.streamlit.app

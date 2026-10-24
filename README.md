@@ -7,7 +7,7 @@
 
 > ⚠️ 이 저장소의 모든 데이터는 `scripts/generate_sample_data.py`로 생성한 **가상 데이터**이며 실제 공장 데이터가 아닙니다.
 
-- **데모:** https://factorylens-1.streamlit.app · "샘플 데이터로 체험" 버튼으로 바로 써 볼 수 있습니다 (공개 데모는 업로드한 데이터를 저장하지 않습니다)
+- **데모:** https://factorylens-1.streamlit.app · "샘플 데이터로 체험" 버튼으로 바로 써 볼 수 있습니다 (공개 데모는 업로드한 데이터를 저장하지 않습니다. 잠든 화면이 나오면 버튼을 누르고 30초쯤 기다려 주세요)
 - **문서:** [ERD](docs/ERD.md) · [지표 정의](docs/metrics.md) · [테스트 결과](docs/test_report.md) · [배포 방법](docs/deploy.md) · [오류 예시 CSV](data/invalid_examples/README.md)
 
 ![FactoryLens 화면](docs/images/overview.png)
@@ -248,3 +248,8 @@ FactoryLens/
 - **p 관리도는 해석용(Phase I)입니다.** 관리 한계를 같은 기간 데이터로 계산하고, 3σ 이탈만 판정합니다(연속 상승 같은 런 규칙은 없음).
 - **코드값 대소문자:** 공정·제품 코드는 대소문자를 구분합니다(`PRESS` ≠ `Press`).
 - **업로드 크기:** 최대 10MB입니다. 20만 행 기준 검증에 약 2초가 걸립니다.
+
+## 관련 프로젝트
+
+- [WeldTrace](https://github.com/gilwon2/WeldTrace) (C# .NET 8 · SQL Server): 배터리 모듈 레이저 용접 라인의 MES·설비 데이터 시스템입니다. 설비 데이터를 수집·검증·추적하고 판정 결과를 FactoryLens 업로드 형식 CSV(`production.csv`, `defects.csv`)로 내보냅니다.
+  WeldTrace가 **설비 데이터**(현장 시스템)를, FactoryLens가 **품질 데이터**(분석)를 맡습니다.
